@@ -1,0 +1,90 @@
+# 'Allow scripts to access the OAuth token' was selected in pipeline.  Add the following YAML to any steps requiring access:
+#       env:
+#           MY_ACCESS_TOKEN: $(System.AccessToken)
+# Variable Group 'CodeQL - Java - Default' was defined in the Variables tab
+name: $(date:yyyyMMdd)$(rev:.r)
+resources:
+  repositories:
+  - repository: self
+    type: git
+    ref: develop
+jobs:
+- job: Job_1
+  displayName: Agent job 1
+  pool:
+    vmImage: windows-2019
+  steps:
+  - checkout: self
+    clean: true
+    fetchTags: false
+    persistCredentials: True
+  - task: PowerShell@2
+    displayName: '[CodeQL] Download & Configure CLI'
+    inputs:
+      targetType: inline
+      script: >-
+        wget https://github.com/github/codeql-action/releases/latest/download/codeql-bundle-win64.tar.gz -O ..\codeql-bundle-win64.tar.gz
+
+        tar xzvf ..\codeql-bundle-win64.tar.gz -C ..\
+
+        del ..\codeql-bundle-win64.tar.gz
+
+        $currentDir = Get-Location
+
+        $parentDir = Split-Path -Path $currentDir -Parent
+
+        Write-Host "##vso[task.setvariable variable=PATH;]${env:PATH};$parentDir/codeql";
+  - task: CmdLine@2
+    displayName: '[CodeQL] Initialise'
+    inputs:
+      script: codeql database init --language $(language) --trace-process-name Agent.Worker.exe --source-root . --begin-tracing db
+  - task: PowerShell@2
+    displayName: '[CodeQL] Set Environment Variables for build tracing'
+    inputs:
+      targetType: inline
+      script: >-
+        $json = Get-Content $(System.DefaultWorkingDirectory)/db/temp/tracingEnvironment/start-tracing.json | ConvertFrom-Json
+                $json.PSObject.Properties | ForEach-Object {
+                $template = "##vso[task.setvariable variable="
+                $template += $_.Name
+                $template += "]"
+                $template += $_.Value
+                echo "$template"
+        }
+  - task: Maven@3
+    displayName: Build
+    inputs:
+      publishJUnitResults: false
+      jdkVersion: 1.17
+  - task: PowerShell@2
+    displayName: '[CodeQL] Clear Environment Variables'
+    inputs:
+      targetType: inline
+      script: >-
+        $json = Get-Content $(System.DefaultWorkingDirectory)/db/temp/tracingEnvironment/end-tracing.json | ConvertFrom-Json
+                $json.PSObject.Properties | ForEach-Object {
+                                     $template = "##vso[task.setvariable variable="
+                                     $template += $_.Name
+                                     $template += "]"
+                                     $template += $_.Value
+                                     echo "$template"
+        }
+  - task: CmdLine@2
+    displayName: '[CodeQL] Finalize Database'
+    inputs:
+      script: codeql database finalize db
+  - task: CmdLine@2
+    displayName: '[CodeQL] Analyse'
+    inputs:
+      script: codeql database analyze db $(language)-$(querySuites).qls --format=sarif-latest --output=results-$(language).sarif
+  - task: PowerShell@2
+    displayName: '[CodeQL] Results Upload'
+    inputs:
+      targetType: inline
+      script: >-
+        $GITHUB_URL = "$(Build.Repository.Uri)" -replace "$(Build.Repository.Name)","";
+
+        echo $GITHUB_URL;
+
+        codeql github upload-results --sarif=results-$(language).sarif --github-url=$GITHUB_URL --repository=$(Build.Repository.Name) --ref=$(Build.SourceBranch) --commit=$(Build.SourceVersion)
+...

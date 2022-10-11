@@ -1,0 +1,55 @@
+# 'Allow scripts to access the OAuth token' was selected in pipeline.  Add the following YAML to any steps requiring access:
+#       env:
+#           MY_ACCESS_TOKEN: $(System.AccessToken)
+# Variable Group 'CodeQL - Javascript - Default' was defined in the Variables tab
+name: $(date:yyyyMMdd)$(rev:.r)
+resources:
+  repositories:
+  - repository: self
+    type: git
+    ref: refs/heads/main
+jobs:
+- job: Job_1
+  displayName: Agent job 1
+  pool:
+    vmImage: windows-2019
+  steps:
+  - checkout: self
+    clean: true
+    fetchTags: false
+    persistCredentials: True
+  - task: PowerShell@2
+    displayName: '[CodeQL] Download & Configure CLI'
+    inputs:
+      targetType: inline
+      script: >-
+        wget https://github.com/github/codeql-action/releases/latest/download/codeql-bundle-win64.tar.gz -O ..\codeql-bundle-win64.tar.gz
+
+        tar xzvf ..\codeql-bundle-win64.tar.gz -C ..\
+
+        del ..\codeql-bundle-win64.tar.gz
+
+        $currentDir = Get-Location
+
+        $parentDir = Split-Path -Path $currentDir -Parent
+
+        Write-Host "##vso[task.setvariable variable=PATH;]${env:PATH};$parentDir/codeql";
+  - task: CmdLine@2
+    displayName: '[CodeQL] Initialise'
+    inputs:
+      script: 'codeql database create ../codeql-dbs/ --language $(language)  '
+  - task: CmdLine@2
+    displayName: '[CodeQL] Analyse'
+    inputs:
+      script: codeql database analyze ../codeql-dbs $(language)-$(querySuites).qls --format=sarif-latest --output=results-$(language).sarif
+  - task: PowerShell@2
+    displayName: '[CodeQL] Results Upload'
+    inputs:
+      targetType: inline
+      script: >-
+        $GITHUB_URL = "$(Build.Repository.Uri)" -replace "$(Build.Repository.Name)","";
+
+        echo $GITHUB_URL;
+
+        codeql github upload-results --sarif=results-$(language).sarif --github-url=$GITHUB_URL --repository=$(Build.Repository.Name) --ref=$(Build.SourceBranch) --commit=$(Build.SourceVersion)
+...
